@@ -1,89 +1,69 @@
 package config
 
 import (
-	"fmt"
+	"errors"
 	"os"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds the top-level fedproxy configuration.
+// Config holds the full fedproxy configuration.
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Proxy    ProxyConfig    `yaml:"proxy"`
-	SAML     SAMLConfig     `yaml:"saml"`
-	PIV      PIVConfig      `yaml:"piv"`
+	Addr     string      `yaml:"addr"`
+	Upstream string      `yaml:"upstream"`
+	Auth     AuthConfig  `yaml:"auth"`
+	Rate     RateConfig  `yaml:"rate"`
+	Log      LogConfig   `yaml:"log"`
 }
 
-// ServerConfig defines listener settings.
-type ServerConfig struct {
-	Addr            string        `yaml:"addr"`
-	TLSCertFile     string        `yaml:"tls_cert_file"`
-	TLSKeyFile      string        `yaml:"tls_key_file"`
-	ReadTimeout     time.Duration `yaml:"read_timeout"`
-	WriteTimeout    time.Duration `yaml:"write_timeout"`
+// AuthConfig controls authentication mode and related settings.
+type AuthConfig struct {
+	Mode         string   `yaml:"mode"` // none | saml | piv
+	MetadataURL  string   `yaml:"metadata_url"`
+	ExemptPaths  []string `yaml:"exempt_paths"`
 }
 
-// ProxyConfig defines upstream target settings.
-type ProxyConfig struct {
-	UpstreamURL     string        `yaml:"upstream_url"`
-	FlushInterval   time.Duration `yaml:"flush_interval"`
-	RequestTimeout  time.Duration `yaml:"request_timeout"`
+// RateConfig controls per-IP rate limiting.
+type RateConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	RequestsPerMin int  `yaml:"requests_per_min"`
 }
 
-// SAMLConfig holds SAML identity provider settings.
-type SAMLConfig struct {
-	Enabled         bool   `yaml:"enabled"`
-	IDPMetadataURL  string `yaml:"idp_metadata_url"`
-	EntityID        string `yaml:"entity_id"`
-	ACSURL          string `yaml:"acs_url"`
-	CertFile        string `yaml:"cert_file"`
-	KeyFile         string `yaml:"key_file"`
+// LogConfig controls request logging behaviour.
+type LogConfig struct {
+	Format string `yaml:"format"` // text | json
 }
 
-// PIVConfig holds PIV/CAC smart-card authentication settings.
-type PIVConfig struct {
-	Enabled         bool     `yaml:"enabled"`
-	ClientCAFiles   []string `yaml:"client_ca_files"`
-	RequireClientCert bool   `yaml:"require_client_cert"`
-}
-
-// Load reads and parses a YAML config file at the given path.
+// Load reads and validates a YAML config file at the given path.
 func Load(path string) (*Config, error) {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("config: open %q: %w", path, err)
-	}
-	defer f.Close()
-
-	cfg := &Config{}
-	decoder := yaml.NewDecoder(f)
-	decoder.KnownFields(true)
-	if err := decoder.Decode(cfg); err != nil {
-		return nil, fmt.Errorf("config: decode %q: %w", path, err)
+		return nil, err
 	}
 
-	if err := cfg.validate(); err != nil {
-		return nil, fmt.Errorf("config: validation: %w", err)
+	var cfg Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
 	}
 
-	return cfg, nil
+	if err := validate(&cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }
 
-// validate performs basic sanity checks on the loaded configuration.
-func (c *Config) validate() error {
-	if c.Server.Addr == "" {
-		return fmt.Errorf("server.addr must not be empty")
+func validate(cfg *Config) error {
+	if cfg.Addr == "" {
+		return errors.New("config: addr is required")
 	}
-	if c.Proxy.UpstreamURL == "" {
-		return fmt.Errorf("proxy.upstream_url must not be empty")
+	if cfg.Upstream == "" {
+		return errors.New("config: upstream is required")
 	}
-	if c.SAML.Enabled && c.SAML.IDPMetadataURL == "" {
-		return fmt.Errorf("saml.idp_metadata_url required when saml is enabled")
+	if cfg.Auth.Mode == "saml" && cfg.Auth.MetadataURL == "" {
+		return errors.New("config: auth.metadata_url required when mode is saml")
 	}
-	if c.PIV.Enabled && len(c.PIV.ClientCAFiles) == 0 {
-		return fmt.Errorf("piv.client_ca_files required when piv is enabled")
+	if cfg.Rate.Enabled && cfg.Rate.RequestsPerMin <= 0 {
+		return errors.New("config: rate.requests_per_min must be > 0 when rate limiting is enabled")
 	}
 	return nil
 }

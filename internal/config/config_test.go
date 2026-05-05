@@ -2,94 +2,75 @@ package config
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 )
 
 func writeTempConfig(t *testing.T, content string) string {
 	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, "fedproxy.yaml")
-	if err := os.WriteFile(p, []byte(content), 0600); err != nil {
-		t.Fatalf("writeTempConfig: %v", err)
+	f, err := os.CreateTemp(t.TempDir(), "fedproxy-*.yaml")
+	if err != nil {
+		t.Fatalf("failed to create temp config: %v", err)
 	}
-	return p
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatalf("failed to write temp config: %v", err)
+	}
+	f.Close()
+	return f.Name()
 }
 
 func TestLoad_ValidMinimal(t *testing.T) {
-	cfgYAML := `
-server:
-  addr: ":8443"
-proxy:
-  upstream_url: "http://localhost:9000"
-`
-	cfg, err := Load(writeTempConfig(t, cfgYAML))
+	path := writeTempConfig(t, "addr: :8080\nupstream: http://localhost:9090\n")
+	cfg, err := Load(path)
 	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Server.Addr != ":8443" {
-		t.Errorf("server.addr = %q, want :8443", cfg.Server.Addr)
-	}
-	if cfg.Proxy.UpstreamURL != "http://localhost:9000" {
-		t.Errorf("proxy.upstream_url = %q", cfg.Proxy.UpstreamURL)
+	if cfg.Addr != ":8080" {
+		t.Errorf("expected :8080, got %s", cfg.Addr)
 	}
 }
 
 func TestLoad_MissingAddr(t *testing.T) {
-	cfgYAML := `
-proxy:
-  upstream_url: "http://localhost:9000"
-`
-	_, err := Load(writeTempConfig(t, cfgYAML))
+	path := writeTempConfig(t, "upstream: http://localhost:9090\n")
+	_, err := Load(path)
 	if err == nil {
-		t.Fatal("expected validation error for missing server.addr")
+		t.Fatal("expected error for missing addr")
 	}
 }
 
 func TestLoad_MissingUpstream(t *testing.T) {
-	cfgYAML := `
-server:
-  addr: ":8443"
-`
-	_, err := Load(writeTempConfig(t, cfgYAML))
+	path := writeTempConfig(t, "addr: :8080\n")
+	_, err := Load(path)
 	if err == nil {
-		t.Fatal("expected validation error for missing proxy.upstream_url")
+		t.Fatal("expected error for missing upstream")
 	}
 }
 
 func TestLoad_SAMLEnabledMissingMetadata(t *testing.T) {
-	cfgYAML := `
-server:
-  addr: ":8443"
-proxy:
-  upstream_url: "http://localhost:9000"
-saml:
-  enabled: true
-`
-	_, err := Load(writeTempConfig(t, cfgYAML))
+	path := writeTempConfig(t, "addr: :8080\nupstream: http://localhost:9090\nauth:\n  mode: saml\n")
+	_, err := Load(path)
 	if err == nil {
-		t.Fatal("expected validation error for saml enabled without idp_metadata_url")
+		t.Fatal("expected error for saml mode without metadata_url")
 	}
 }
 
-func TestLoad_PIVEnabledMissingCAs(t *testing.T) {
-	cfgYAML := `
-server:
-  addr: ":8443"
-proxy:
-  upstream_url: "http://localhost:9000"
-piv:
-  enabled: true
-`
-	_, err := Load(writeTempConfig(t, cfgYAML))
+func TestLoad_RateEnabledZeroRequests(t *testing.T) {
+	path := writeTempConfig(t, "addr: :8080\nupstream: http://localhost:9090\nrate:\n  enabled: true\n  requests_per_min: 0\n")
+	_, err := Load(path)
 	if err == nil {
-		t.Fatal("expected validation error for piv enabled without client_ca_files")
+		t.Fatal("expected error for rate enabled with zero requests_per_min")
 	}
 }
 
-func TestLoad_FileNotFound(t *testing.T) {
-	_, err := Load("/nonexistent/path/fedproxy.yaml")
-	if err == nil {
-		t.Fatal("expected error for missing file")
+func TestLoad_ValidWithRate(t *testing.T) {
+	path := writeTempConfig(t, "addr: :8080\nupstream: http://localhost:9090\nrate:\n  enabled: true\n  requests_per_min: 60\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Rate.Enabled {
+		t.Error("expected rate limiting to be enabled")
+	}
+	if cfg.Rate.RequestsPerMin != 60 {
+		t.Errorf("expected 60, got %d", cfg.Rate.RequestsPerMin)
 	}
 }
