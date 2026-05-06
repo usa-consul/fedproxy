@@ -9,12 +9,12 @@ func writeTempConfig(t *testing.T, content string) string {
 	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "fedproxy-*.yaml")
 	if err != nil {
-		t.Fatalf("failed to create temp config: %v", err)
+		t.Fatalf("create temp file: %v", err)
 	}
 	if _, err := f.WriteString(content); err != nil {
-		t.Fatalf("failed to write temp config: %v", err)
+		t.Fatalf("write temp file: %v", err)
 	}
-	f.Close()
+	_ = f.Close()
 	return f.Name()
 }
 
@@ -25,7 +25,7 @@ func TestLoad_ValidMinimal(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cfg.Addr != ":8080" {
-		t.Errorf("expected :8080, got %s", cfg.Addr)
+		t.Errorf("addr = %q, want :8080", cfg.Addr)
 	}
 }
 
@@ -49,28 +49,46 @@ func TestLoad_SAMLEnabledMissingMetadata(t *testing.T) {
 	path := writeTempConfig(t, "addr: :8080\nupstream: http://localhost:9090\nauth:\n  mode: saml\n")
 	_, err := Load(path)
 	if err == nil {
-		t.Fatal("expected error for saml mode without metadata_url")
+		t.Fatal("expected error for saml mode without metadata")
 	}
 }
 
-func TestLoad_RateEnabledZeroRequests(t *testing.T) {
-	path := writeTempConfig(t, "addr: :8080\nupstream: http://localhost:9090\nrate:\n  enabled: true\n  requests_per_min: 0\n")
+func TestLoad_PIVMissingCACert(t *testing.T) {
+	path := writeTempConfig(t, "addr: :8080\nupstream: http://localhost:9090\nauth:\n  mode: piv\n")
 	_, err := Load(path)
 	if err == nil {
-		t.Fatal("expected error for rate enabled with zero requests_per_min")
+		t.Fatal("expected error for piv mode without ca cert")
 	}
 }
 
-func TestLoad_ValidWithRate(t *testing.T) {
-	path := writeTempConfig(t, "addr: :8080\nupstream: http://localhost:9090\nrate:\n  enabled: true\n  requests_per_min: 60\n")
+func TestLoad_SecuritySection(t *testing.T) {
+	content := `
+addr: :8080
+upstream: http://localhost:9090
+security:
+  hsts_max_age: 63072000
+  content_security_policy: "default-src 'self'"
+  extra_headers:
+    X-Agency: DOD
+`
+	path := writeTempConfig(t, content)
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !cfg.Rate.Enabled {
-		t.Error("expected rate limiting to be enabled")
+	if cfg.Security.HSTSMaxAge != 63072000 {
+		t.Errorf("hsts_max_age = %d, want 63072000", cfg.Security.HSTSMaxAge)
 	}
-	if cfg.Rate.RequestsPerMin != 60 {
-		t.Errorf("expected 60, got %d", cfg.Rate.RequestsPerMin)
+	if cfg.Security.ExtraHeaders["X-Agency"] != "DOD" {
+		t.Errorf("extra header X-Agency = %q, want DOD", cfg.Security.ExtraHeaders["X-Agency"])
+	}
+}
+
+func TestLoad_RateLimitMissingRequests(t *testing.T) {
+	content := "addr: :8080\nupstream: http://localhost:9090\nrate_limit:\n  enabled: true\n  window_secs: 60\n"
+	path := writeTempConfig(t, content)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for rate_limit enabled without requests")
 	}
 }

@@ -1,10 +1,9 @@
 package main
 
 import (
-	"flag"
 	"log"
 	"net/http"
-	"time"
+	"os"
 
 	"github.com/agency/fedproxy/internal/config"
 	"github.com/agency/fedproxy/internal/middleware"
@@ -12,42 +11,44 @@ import (
 )
 
 func main() {
-	cfgPath := flag.String("config", "fedproxy.yaml", "path to config file")
-	flag.Parse()
+	cfgPath := "fedproxy.yaml"
+	if v := os.Getenv("FEDPROXY_CONFIG"); v != "" {
+		cfgPath = v
+	}
 
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		log.Fatalf("failed to load config: %v", err)
+		log.Fatalf("config: %v", err)
 	}
 
 	rp, err := proxy.New(cfg)
 	if err != nil {
-		log.Fatalf("failed to create reverse proxy: %v", err)
+		log.Fatalf("proxy: %v", err)
 	}
 
-	logger := log.Default()
+	// Build security headers middleware from config.
+	secCfg := middleware.DefaultSecurityHeadersConfig()
+	if cfg.Security.HSTSMaxAge != 0 {
+		secCfg.HSTSMaxAge = cfg.Security.HSTSMaxAge
+	}
+	if cfg.Security.ContentSecurityPolicy != "" {
+		secCfg.ContentSecurityPolicy = cfg.Security.ContentSecurityPolicy
+	}
+	if len(cfg.Security.ExtraHeaders) > 0 {
+		secCfg.ExtraHeaders = cfg.Security.ExtraHeaders
+	}
+
 	var handler http.Handler = rp
-
 	handler = middleware.RequireAuth(cfg, handler)
-
-	if cfg.Rate.Enabled {
-		window := time.Minute
-		limiter := middleware.NewRateLimiter(cfg.Rate.RequestsPerMin, window)
-		handler = middleware.RateLimit(limiter)(handler)
+	if cfg.RateLimit.Enabled {
+		rl := middleware.NewRateLimiter(cfg.RateLimit.Requests, cfg.RateLimit.WindowSecs)
+		handler = middleware.RateLimit(rl)(handler)
 	}
-
-	handler = middleware.RequestLogger(logger)(handler)
-
-	srv := &http.Server{
-		Addr:         cfg.Addr,
-		Handler:      handler,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
+	handler = middleware.SecurityHeaders(secCfg)(handler)
+	handler = middleware.RequestLogger(log.Default())(handler)
 
 	log.Printf("fedproxy listening on %s -> %s", cfg.Addr, cfg.Upstream)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("server error: %v", err)
+	if err := http.ListenAndServe(cfg.Addr, handler); err != nil {
+		log.Fatalf("server: %v", err)
 	}
 }
