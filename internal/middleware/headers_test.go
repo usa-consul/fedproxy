@@ -100,3 +100,19 @@ func TestSecurityHeaders_NoHSTSWhenZero(t *testing.T) {
 		t.Errorf("expected no HSTS header when max-age=0, got %q", got)
 	}
 }
+
+func TestSecurityHeaders_StatusCodePassthrough(t *testing.T) {
+	cfg := DefaultSecurityHeadersConfig()
+	statusHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	handler := SecurityHeaders(cfg)(statusHandler)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTeapot {
+		t.Errorf("status code = %d, want %d", rec.Code, http.StatusTeapot)
+	}
+}
