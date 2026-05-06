@@ -8,37 +8,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config holds all runtime configuration for fedproxy.
+// AuthMode defines the authentication strategy.
+type AuthMode string
+
+const (
+	AuthNone AuthMode = "none"
+	AuthSAML AuthMode = "saml"
+	AuthPIV  AuthMode = "piv"
+)
+
+// CircuitBreakerConfig holds circuit breaker settings from config file.
+type CircuitBreakerConfig struct {
+	Enabled      bool          `yaml:"enabled"`
+	MaxFailures  int           `yaml:"max_failures"`
+	OpenDuration time.Duration `yaml:"open_duration"`
+}
+
+// Config represents the full application configuration.
 type Config struct {
 	Addr     string   `yaml:"addr"`
 	Upstream string   `yaml:"upstream"`
-	Exempt   []string `yaml:"exempt"`
+	Auth     AuthMode `yaml:"auth"`
 
-	Auth struct {
-		Mode string `yaml:"mode"` // none | saml | piv
-	} `yaml:"auth"`
-
-	SAML struct {
-		MetadataURL string `yaml:"metadata_url"`
-	} `yaml:"saml"`
+	SAMLMetadataURL string `yaml:"saml_metadata_url"`
+	ExemptPaths     []string `yaml:"exempt_paths"`
 
 	RateLimit struct {
-		Requests int           `yaml:"requests"`
+		Enabled  bool `yaml:"enabled"`
+		Requests int  `yaml:"requests"`
 		Window   time.Duration `yaml:"window"`
 	} `yaml:"rate_limit"`
 
-	Timeout struct {
-		Request time.Duration `yaml:"request"`
-		Message string        `yaml:"message"`
-	} `yaml:"timeout"`
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 
-	Security struct {
-		HSTSMaxAge  int               `yaml:"hsts_max_age"`
-		ExtraHeaders map[string]string `yaml:"extra_headers"`
-	} `yaml:"security"`
+	Timeout time.Duration `yaml:"timeout"`
+	LogJSON bool          `yaml:"log_json"`
 }
 
-// Load reads and validates a YAML config file at path.
+// Load reads and validates configuration from the given file path.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -61,18 +68,16 @@ func validate(cfg *Config) error {
 	if cfg.Upstream == "" {
 		return errors.New("config: upstream is required")
 	}
-	mode := cfg.Auth.Mode
-	if mode != "" && mode != "none" && mode != "saml" && mode != "piv" {
-		return errors.New("config: auth.mode must be none, saml, or piv")
+	if cfg.Auth == AuthSAML && cfg.SAMLMetadataURL == "" {
+		return errors.New("config: saml_metadata_url required when auth is saml")
 	}
-	if mode == "saml" && cfg.SAML.MetadataURL == "" {
-		return errors.New("config: saml.metadata_url is required when auth.mode is saml")
-	}
-	if cfg.Timeout.Request < 0 {
-		return errors.New("config: timeout.request must be non-negative")
-	}
-	if cfg.RateLimit.Requests < 0 {
-		return errors.New("config: rate_limit.requests must be non-negative")
+	if cfg.CircuitBreaker.Enabled {
+		if cfg.CircuitBreaker.MaxFailures <= 0 {
+			return errors.New("config: circuit_breaker.max_failures must be > 0")
+		}
+		if cfg.CircuitBreaker.OpenDuration <= 0 {
+			return errors.New("config: circuit_breaker.open_duration must be > 0")
+		}
 	}
 	return nil
 }
