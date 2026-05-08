@@ -3,64 +3,59 @@ package config
 import (
 	"errors"
 	"os"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
-// Config is the top-level configuration for fedproxy.
-type Config struct {
-	Addr     string        `yaml:"addr"`
-	Upstream string        `yaml:"upstream"`
-	Timeout  time.Duration `yaml:"timeout"`
-
-	Auth AuthConfig `yaml:"auth"`
-
-	RateLimit RateLimitConfig `yaml:"rate_limit"`
-
-	CORS CORSConfig `yaml:"cors"`
+// RewriteRule mirrors middleware.RewriteRule for config parsing.
+type RewriteRule struct {
+	StripPrefix string `yaml:"strip_prefix"`
+	AddPrefix   string `yaml:"add_prefix"`
 }
 
-// AuthConfig controls authentication mode.
-type AuthConfig struct {
-	Mode            string   `yaml:"mode"` // none | saml | piv
-	SAMLMetadata    string   `yaml:"saml_metadata"`
-	ExemptPaths     []string `yaml:"exempt_paths"`
+// SAMLConfig holds SAML-specific settings.
+type SAMLConfig struct {
+	MetadataURL string `yaml:"metadata_url"`
 }
 
-// RateLimitConfig controls per-client rate limiting.
+// PIVConfig holds PIV/CAC certificate auth settings.
+type PIVConfig struct {
+	CABundle string `yaml:"ca_bundle"`
+}
+
+// RateLimitConfig holds rate limiting settings.
 type RateLimitConfig struct {
-	Enabled  bool `yaml:"enabled"`
-	Requests int  `yaml:"requests"`
-	Window   time.Duration `yaml:"window"`
+	RequestsPerSecond float64 `yaml:"requests_per_second"`
+	Burst             int     `yaml:"burst"`
 }
 
-// CORSConfig mirrors middleware.CORSConfig for YAML deserialization.
-type CORSConfig struct {
-	Enabled          bool     `yaml:"enabled"`
-	AllowedOrigins   []string `yaml:"allowed_origins"`
-	AllowedMethods   []string `yaml:"allowed_methods"`
-	AllowedHeaders   []string `yaml:"allowed_headers"`
-	AllowCredentials bool     `yaml:"allow_credentials"`
-	MaxAge           string   `yaml:"max_age"`
+// Config is the top-level application configuration.
+type Config struct {
+	Addr          string          `yaml:"addr"`
+	Upstream      string          `yaml:"upstream"`
+	AuthMode      string          `yaml:"auth_mode"`
+	ExemptPaths   []string        `yaml:"exempt_paths"`
+	SAML          SAMLConfig      `yaml:"saml"`
+	PIV           PIVConfig       `yaml:"piv"`
+	RateLimit     RateLimitConfig `yaml:"rate_limit"`
+	RewriteRules  []RewriteRule   `yaml:"rewrite_rules"`
+	ReadTimeout   int             `yaml:"read_timeout_seconds"`
+	WriteTimeout  int             `yaml:"write_timeout_seconds"`
 }
 
-// Load reads and validates a YAML config file at path.
+// Load reads a YAML config file from path and validates it.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
-
 	if err := validate(&cfg); err != nil {
 		return nil, err
 	}
-
 	return &cfg, nil
 }
 
@@ -71,19 +66,20 @@ func validate(cfg *Config) error {
 	if cfg.Upstream == "" {
 		return errors.New("config: upstream is required")
 	}
-	if cfg.Auth.Mode == "saml" && cfg.Auth.SAMLMetadata == "" {
-		return errors.New("config: saml_metadata is required when auth mode is saml")
-	}
-	if cfg.RateLimit.Enabled {
-		if cfg.RateLimit.Requests <= 0 {
-			return errors.New("config: rate_limit.requests must be > 0 when rate limiting is enabled")
+	switch cfg.AuthMode {
+	case "", "none", "piv":
+		// valid
+	case "saml":
+		if cfg.SAML.MetadataURL == "" {
+			return errors.New("config: saml.metadata_url is required when auth_mode is saml")
 		}
-		if cfg.RateLimit.Window <= 0 {
-			return errors.New("config: rate_limit.window must be > 0 when rate limiting is enabled")
-		}
+	default:
+		return errors.New("config: unknown auth_mode: " + cfg.AuthMode)
 	}
-	if cfg.CORS.Enabled && len(cfg.CORS.AllowedOrigins) == 0 {
-		return errors.New("config: cors.allowed_origins must not be empty when CORS is enabled")
+	for _, rule := range cfg.RewriteRules {
+		if rule.StripPrefix == "" && rule.AddPrefix == "" {
+			return errors.New("config: rewrite rule must specify strip_prefix or add_prefix")
+		}
 	}
 	return nil
 }
