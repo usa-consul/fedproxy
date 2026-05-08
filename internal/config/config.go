@@ -8,56 +8,59 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// AuthMode defines the authentication strategy.
-type AuthMode string
-
-const (
-	AuthNone AuthMode = "none"
-	AuthSAML AuthMode = "saml"
-	AuthPIV  AuthMode = "piv"
-)
-
-// CircuitBreakerConfig holds circuit breaker settings from config file.
-type CircuitBreakerConfig struct {
-	Enabled      bool          `yaml:"enabled"`
-	MaxFailures  int           `yaml:"max_failures"`
-	OpenDuration time.Duration `yaml:"open_duration"`
-}
-
-// Config represents the full application configuration.
+// Config is the top-level configuration for fedproxy.
 type Config struct {
-	Addr     string   `yaml:"addr"`
-	Upstream string   `yaml:"upstream"`
-	Auth     AuthMode `yaml:"auth"`
+	Addr     string        `yaml:"addr"`
+	Upstream string        `yaml:"upstream"`
+	Timeout  time.Duration `yaml:"timeout"`
 
-	SAMLMetadataURL string `yaml:"saml_metadata_url"`
-	ExemptPaths     []string `yaml:"exempt_paths"`
+	Auth AuthConfig `yaml:"auth"`
 
-	RateLimit struct {
-		Enabled  bool `yaml:"enabled"`
-		Requests int  `yaml:"requests"`
-		Window   time.Duration `yaml:"window"`
-	} `yaml:"rate_limit"`
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
 
-	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
-
-	Timeout time.Duration `yaml:"timeout"`
-	LogJSON bool          `yaml:"log_json"`
+	CORS CORSConfig `yaml:"cors"`
 }
 
-// Load reads and validates configuration from the given file path.
+// AuthConfig controls authentication mode.
+type AuthConfig struct {
+	Mode            string   `yaml:"mode"` // none | saml | piv
+	SAMLMetadata    string   `yaml:"saml_metadata"`
+	ExemptPaths     []string `yaml:"exempt_paths"`
+}
+
+// RateLimitConfig controls per-client rate limiting.
+type RateLimitConfig struct {
+	Enabled  bool `yaml:"enabled"`
+	Requests int  `yaml:"requests"`
+	Window   time.Duration `yaml:"window"`
+}
+
+// CORSConfig mirrors middleware.CORSConfig for YAML deserialization.
+type CORSConfig struct {
+	Enabled          bool     `yaml:"enabled"`
+	AllowedOrigins   []string `yaml:"allowed_origins"`
+	AllowedMethods   []string `yaml:"allowed_methods"`
+	AllowedHeaders   []string `yaml:"allowed_headers"`
+	AllowCredentials bool     `yaml:"allow_credentials"`
+	MaxAge           string   `yaml:"max_age"`
+}
+
+// Load reads and validates a YAML config file at path.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
+
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
+
 	if err := validate(&cfg); err != nil {
 		return nil, err
 	}
+
 	return &cfg, nil
 }
 
@@ -68,16 +71,19 @@ func validate(cfg *Config) error {
 	if cfg.Upstream == "" {
 		return errors.New("config: upstream is required")
 	}
-	if cfg.Auth == AuthSAML && cfg.SAMLMetadataURL == "" {
-		return errors.New("config: saml_metadata_url required when auth is saml")
+	if cfg.Auth.Mode == "saml" && cfg.Auth.SAMLMetadata == "" {
+		return errors.New("config: saml_metadata is required when auth mode is saml")
 	}
-	if cfg.CircuitBreaker.Enabled {
-		if cfg.CircuitBreaker.MaxFailures <= 0 {
-			return errors.New("config: circuit_breaker.max_failures must be > 0")
+	if cfg.RateLimit.Enabled {
+		if cfg.RateLimit.Requests <= 0 {
+			return errors.New("config: rate_limit.requests must be > 0 when rate limiting is enabled")
 		}
-		if cfg.CircuitBreaker.OpenDuration <= 0 {
-			return errors.New("config: circuit_breaker.open_duration must be > 0")
+		if cfg.RateLimit.Window <= 0 {
+			return errors.New("config: rate_limit.window must be > 0 when rate limiting is enabled")
 		}
+	}
+	if cfg.CORS.Enabled && len(cfg.CORS.AllowedOrigins) == 0 {
+		return errors.New("config: cors.allowed_origins must not be empty when CORS is enabled")
 	}
 	return nil
 }
