@@ -21,6 +21,19 @@ func DefaultRewriteConfig() RewriteConfig {
 	return RewriteConfig{}
 }
 
+// applyRule rewrites the given path according to rule, returning the rewritten
+// path and true if the rule matched, or the original path and false otherwise.
+func applyRule(path string, rule RewriteRule) (string, bool) {
+	if rule.StripPrefix == "" || !strings.HasPrefix(path, rule.StripPrefix) {
+		return path, false
+	}
+	trimmed := strings.TrimPrefix(path, rule.StripPrefix)
+	if !strings.HasPrefix(trimmed, "/") {
+		trimmed = "/" + trimmed
+	}
+	return rule.AddPrefix + trimmed, true
+}
+
 // PathRewrite returns middleware that rewrites request URL paths according to
 // the provided rules. Rules are evaluated in order; the first matching rule
 // is applied and evaluation stops.
@@ -29,19 +42,13 @@ func PathRewrite(cfg RewriteConfig) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			path := r.URL.Path
 			for _, rule := range cfg.Rules {
-				if rule.StripPrefix != "" && strings.HasPrefix(path, rule.StripPrefix) {
-					trimmed := strings.TrimPrefix(path, rule.StripPrefix)
-					if !strings.HasPrefix(trimmed, "/") {
-						trimmed = "/" + trimmed
-					}
+				if newPath, ok := applyRule(path, rule); ok {
 					r = r.Clone(r.Context())
-					r.URL.Path = rule.AddPrefix + trimmed
+					r.URL.Path = newPath
 					if r.URL.RawPath != "" {
-						rawTrimmed := strings.TrimPrefix(r.URL.RawPath, rule.StripPrefix)
-						if !strings.HasPrefix(rawTrimmed, "/") {
-							rawTrimmed = "/" + rawTrimmed
+						if newRawPath, rawOk := applyRule(r.URL.RawPath, rule); rawOk {
+							r.URL.RawPath = newRawPath
 						}
-						r.URL.RawPath = rule.AddPrefix + rawTrimmed
 					}
 					break
 				}
