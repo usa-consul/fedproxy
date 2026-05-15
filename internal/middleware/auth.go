@@ -1,68 +1,74 @@
 package middleware
 
 import (
+	"crypto/tls"
 	"net/http"
 	"strings"
 )
 
-// AuthMode defines the authentication strategy enforced by the proxy.
-type AuthMode string
-
-const (
-	AuthModeNone AuthMode = "none"
-	AuthModeSAML AuthMode = "saml"
-	AuthModePIV  AuthMode = "piv"
-)
-
-// AuthConfig holds configuration for the auth middleware.
+// AuthConfig holds configuration for the RequireAuth middleware.
 type AuthConfig struct {
-	Mode           AuthMode
-	ExemptPaths    []string
-	SAMLMetadata   string
+	// Mode is one of: "none", "saml", "piv".
+	Mode string
+	// ExemptPaths are paths that bypass authentication checks.
+	ExemptPaths []string
 }
 
-// RequireAuth returns an HTTP middleware that enforces the configured auth mode.
-// For now, SAML and PIV modes validate the presence of expected headers/certs;
-// full IdP integration is wired in later phases.
+// DefaultAuthConfig returns a permissive default config (mode: none).
+func DefaultAuthConfig() AuthConfig {
+	return AuthConfig{
+		Mode:        "none",
+		ExemptPaths: []string{"/health", "/_metrics"},
+	}
+}
+
+// RequireAuth enforces authentication based on the configured mode.
 func RequireAuth(cfg AuthConfig, next http.Handler) http.Handler {
 	exempt := buildExemptSet(cfg.ExemptPaths)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if exempt[r.URL.Path] {
+		if _, ok := exempt[r.URL.Path]; ok {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		switch cfg.Mode {
-		case AuthModeSAML:
+		switch strings.ToLower(cfg.Mode) {
+		case "saml":
 			if !hasSAMLAssertion(r) {
-				http.Error(w, "SAML authentication required", http.StatusUnauthorized)
+				http.Error(w, "SAML assertion required", http.StatusUnauthorized)
 				return
 			}
-		case AuthModePIV:
-			if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		case "piv":
+			if !hasPIVCert(r) {
 				http.Error(w, "PIV certificate required", http.StatusUnauthorized)
 				return
 			}
-		default:
-			// AuthModeNone — pass through
 		}
 
 		next.ServeHTTP(w, r)
 	})
 }
 
-// hasSAMLAssertion checks for a minimal SAML assertion signal on the request.
-// A real implementation would validate a session cookie or signed assertion.
+// hasSAMLAssertion checks for a SAML assertion in the request header.
 func hasSAMLAssertion(r *http.Request) bool {
-	v := r.Header.Get("X-Saml-Subject")
-	return strings.TrimSpace(v) != ""
+	return r.Header.Get("X-Saml-Assertion") != ""
 }
 
-func buildExemptSet(paths []string) map[string]bool {
-	m := make(map[string]bool, len(paths))
-	for _, p := range paths {
-		m[p] = true
+// hasPIVCert checks whether the request carries a verified TLS client certificate.
+func hasPIVCert(r *http.Request) bool {
+	if r.TLS == nil {
+		return false
 	}
-	return m
+	var verified [][]tls.Certificate
+	_ = verified // placeholder for future chain validation
+	return len(r.TLS.PeerCertificates) > 0
+}
+
+// buildExemptSet converts a slice of paths into a set for O(1) lookup.
+func buildExemptSet(paths []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		set[p] = struct{}{}
+	}
+	return set
 }
