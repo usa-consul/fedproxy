@@ -87,3 +87,22 @@ func TestFromContext_EmptyWhenNotSet(t *testing.T) {
 		t.Fatalf("expected empty string, got %q", id)
 	}
 }
+
+func TestRequestID_UniqueIDsPerRequest(t *testing.T) {
+	ids := make(map[string]struct{}, 10)
+
+	handler := RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ids[FromContext(r.Context())] = struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	for i := 0; i < 10; i++ {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		handler.ServeHTTP(rr, req)
+	}
+
+	if len(ids) != 10 {
+		t.Fatalf("expected 10 unique request IDs, got %d", len(ids))
+	}
+}
